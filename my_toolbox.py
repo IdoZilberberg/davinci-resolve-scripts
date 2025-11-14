@@ -287,36 +287,70 @@ def onApplyShotOffset(_ev=None):
     print(f"[Modify Shot] Complete: {modified} modified, {skipped} skipped")
 
 
-def onApplyShotFromFilename():
-    def _normalize(clip):
+def onApplyShotFromFilename(_ev=None):
+    def _extract_from_filename(clip):
+        try:
+            clip_name = clip.GetName()
+        except Exception:
+            clip_name = "<unknown>"
+        
         md = clip.GetMetadata() or {}
-        shot = md.get("Shot")
-        scene = md.get("Scene")
+        old_shot = md.get("Shot")
+        old_scene = md.get("Scene")
 
-        applyDateTimeToShotAndScene(clip, dt)
+        m_shot = SHOT_COMPACT_RE.match(clip_name) if clip_name else None
+        if not m_shot:
+            return {"status": "skipped", "clip": clip_name, "reason": "filename does not match compact shot pattern"}
+
+        date_str = m_shot.group("date")   # YYYYMMDD
+        time_str = m_shot.group("time")   # HHMMSS
+        try:
+            dt = datetime.strptime(date_str + time_str, "%Y%m%d%H%M%S")
+        except Exception as e:
+            return {"status": "skipped", "clip": clip_name, "reason": f"parse error: {e}"}
+
+        # normalized strings
+        new_shot = dt.strftime("%Y-%m-%dT%H:%M:%S")
+        new_scene = dt.strftime("%Y-%m-%d")
+
+        is_dry_run = not bool(winItms["dryRunToggle"].Checked)  # Checked=True => APPLY, so DRY when unchecked
+        if not is_dry_run:
+            applyDateTimeToShotAndScene(clip, dt)
+            print(f"[Shot from Filename] {clip_name}: Shot={new_shot}, Scene={new_scene}")
+        else:
+            print(f"[Shot from Filename] [DRY RUN] {clip_name}: Shot={new_shot}, Scene={new_scene}")
+        
         return {
             "status": "normalized",
-            "clip": clip.GetName(),
+            "clip": clip_name,
             "shot": new_shot,
             "scene": new_scene,
-            "old_shot": shot,
-            "old_scene": scene,
+            "old_shot": old_shot,
+            "old_scene": old_scene,
+            "dry_run": is_dry_run,
         }
     
-    results, selectedClips = applyToSelectedClips(_normalize)
+    results, selectedClips = applyToSelectedClips(_extract_from_filename)
     if not selectedClips:
         return
+
+    is_dry_run = not bool(winItms["dryRunToggle"].Checked)
+    dry_prefix = "[DRY RUN] " if is_dry_run else ""
 
     def _line_builder(r):
         if isinstance(r, dict):
             if r.get("status") == "normalized":
-                return f"Normalized: {r['clip']} (Shot: {r['old_shot']} -> {r['shot']}, Scene: {r['old_scene']} -> {r['scene']})"
+                prefix = "[DRY RUN] " if r.get("dry_run") else ""
+                return f"{prefix}Extracted: {r['clip']} (Shot: {r['old_shot']} -> {r['shot']}, Scene: {r['old_scene']} -> {r['scene']})"
             if r.get("status") == "skipped":
                 return f"Skipped: {r['clip']} ({r['reason']})"
         return None
 
-    summary = summarize_results("Normalized Shot & Scene:", results, _line_builder)
+    summary = summarize_results(f"{dry_prefix}Extracted Shot & Scene from filename:", results, _line_builder)
+    modified = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "normalized")
+    skipped = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "skipped")
     winItms["listbox"].Text = summary
+    print(f"[Shot from Filename] Complete: {modified} extracted, {skipped} skipped")
 
 
 def onApplyNormalize(_ev=None):
