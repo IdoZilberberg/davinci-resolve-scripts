@@ -116,8 +116,7 @@ def track_spot_on_frame(
     origin_cx = spot["origin_cx"]
     origin_cy = spot["origin_cy"]
 
-    # Per-frame search region around previous center.
-    # We search over centers within ±max_shift, so we add half template size.
+    # Per-frame search region around previous center (center ± max_shift)
     half_w = templ_w // 2
     half_h = templ_h // 2
 
@@ -154,17 +153,17 @@ def track_spot_on_frame(
     cy_new = max(0, min(cy_new, height - 1))
 
     # Global limit: must stay within a box of size (2*max_shift+1) centered at origin
-    dx_global = cx_new - origin_cx
-    dy_global = cy_new - origin_cy
+    # dx_global = cx_new - origin_cx
+    # dy_global = cy_new - origin_cy
 
-    if abs(dx_global) > max_shift or abs(dy_global) > max_shift:
-        # Kill this spot: it moved too far from original center
-        spot["alive"] = False
-        print(
-            f"Killing spot at origin ({origin_cx:.1f},{origin_cy:.1f}) "
-            f"due to global shift ({dx_global:.1f},{dy_global:.1f})"
-        )
-        return
+    # if abs(dx_global) > max_shift or abs(dy_global) > max_shift:
+    #     # Kill this spot: it moved too far from original center
+    #     spot["alive"] = False
+    #     print(
+    #         f"Killing spot at origin ({origin_cx:.1f},{origin_cy:.1f}) "
+    #         f"due to global shift ({dx_global:.1f},{dy_global:.1f})"
+    #     )
+    #     return
 
     # Otherwise, accept new position
     spot["last_cx"] = float(cx_new)
@@ -173,7 +172,7 @@ def track_spot_on_frame(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Blur tracked spots in video (template matching per frame)."
+        description="Remove tracked spots in video using OpenCV inpainting."
     )
     parser.add_argument("video", help="Path to input video file")
     parser.add_argument("spots_json", help="JSON file with spot definitions")
@@ -182,38 +181,59 @@ def main():
         help="Output video file (default: <video>_clean.mp4)",
     )
     parser.add_argument(
-        "--kernel",
-        type=int,
-        default=21,
-        help="Gaussian blur kernel size (odd number, default: 21)",
-    )
-    parser.add_argument(
         "--darken",
         type=float,
         default=1.0,
-        help="Darken factor for masked area (0.0–1.0, default: 1.0 = no darken)",
+        help="Darken factor for masked (inpainted) area (0.0–1.0, default: 1.0 = no darken)",
     )
     parser.add_argument(
         "--max-shift",
         type=int,
         default=MAX_SHIFT_PIXELS,
         help=(
-            "Maximum allowed shift in pixels for spot center:\n"
-            "- per frame (search radius around previous center)\n"
-            "- and globally from original center (if exceeded, spot is removed)\n"
+            "Maximum search radius in pixels around the last known center when tracking each spot "
+            "in a single frame. Larger values let the tracker follow faster motion/jitter, but can "
+            "increase the risk of false matches. This does NOT limit total drift over the whole clip.\n"
             f"(default: {MAX_SHIFT_PIXELS})"
         ),
     )
+
     parser.add_argument(
         "--match-threshold",
         type=float,
         default=MATCH_THRESHOLD,
         help=(
-            "Minimum normalized correlation (0–1) to accept a new match.\n"
-            "If below this value, the previous center is kept.\n"
+            "Minimum normalized correlation (0–1) from template matching required to update a spot's "
+            "position in a frame. If the best match is below this value, the spot stays at its previous "
+            "center for that frame. Lower values (e.g. 0.3–0.4) allow tracking through more noise but "
+            "risk bad jumps; higher values (e.g. 0.6–0.8) are stricter and reduce drift but may freeze "
+            "the spot when the pattern is weak.\n"
             f"(default: {MATCH_THRESHOLD})"
         ),
     )
+
+    parser.add_argument(
+        "--inpaint-radius",
+        type=float,
+        default=3.0,
+        help="Inpainting radius (OpenCV inpaintRadius, default: 3.0)",
+    )
+
+    parser.add_argument(
+        "--inpaint-method",
+        choices=["telea", "ns"],
+        default="telea",
+        help="Inpainting method: 'telea' (fast, default) or 'ns' (Navier-Stokes).",
+    )
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="If set, draw red circles around inpainted areas for debugging.",
+    )
+
+
+
     args = parser.parse_args()
 
     video_path = args.video
@@ -260,9 +280,6 @@ def main():
     # Rewind to the start of the video for processing
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-    if args.kernel % 2 == 0:
-        args.kernel += 1  # Gaussian kernel size must be odd
-
     output_path = args.output
     if not output_path:
         base, ext = os.path.splitext(video_path)
@@ -274,13 +291,21 @@ def main():
     frame_idx = 0
     max_shift = max(1, args.max_shift)
     match_threshold = max(0.0, min(1.0, args.match_threshold))
+    inpaint_radius = float(args.inpaint_radius)
+
+    if args.inpaint_method == "telea":
+        inpaint_flag = cv2.INPAINT_TELEA
+    else:  # "ns"
+        inpaint_flag = cv2.INPAINT_NS
+
+    debug = args.debug
+    
+
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
-        blurred = cv2.GaussianBlur(frame, (args.kernel, args.kernel), 0)
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray_proc = preprocess_for_match(gray)
@@ -288,6 +313,7 @@ def main():
         mask = np.zeros((height, width), dtype=np.uint8)
 
         active_spots = 0
+        debug_circles = []  # list of (cx, cy, r) for this frame
         for spot in spot_templates:
             if not spot["alive"]:
                 continue
@@ -310,18 +336,33 @@ def main():
             cv2.circle(mask, (cx, cy), r, 255, thickness=-1)
             active_spots += 1
 
-        mask_bool = mask == 255
-        out = frame.copy()
+            if debug:
+                debug_circles.append((cx, cy, r))
 
         if active_spots > 0:
-            out[mask_bool] = blurred[mask_bool]
+            # Inpaint the masked areas
+            inpainted = cv2.inpaint(
+                frame,
+                mask,
+                inpaintRadius=inpaint_radius,
+                flags=inpaint_flag,
+            )
+            out = inpainted
 
             if args.darken < 1.0:
+                mask_bool = mask == 255
                 region = out[mask_bool].astype(np.float32)
                 region *= args.darken
                 out[mask_bool] = np.clip(region, 0, 255).astype(np.uint8)
+        else:
+            out = frame
+
+        if debug and debug_circles:
+            for cx, cy, r in debug_circles:
+                cv2.circle(out, (cx, cy), r, (0, 0, 255), 2)    
 
         writer.write(out)
+
         frame_idx += 1
 
         if frame_idx % 100 == 0:
