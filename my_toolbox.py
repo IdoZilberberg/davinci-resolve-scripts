@@ -10,14 +10,15 @@ from my_toolbox_utils import (
     format_hhmmss,
     norm_path,
     SHOT_DATETIME_FORMATS,
-    SHOT_COMPACT_RE,
+    SHOT_COMPACT_WITH_CAMERA_RE,
+    FILENAME_AS_TIMESTAMP_RE,
     SCENE_DATE_RE,
     parse_shot_datetime,
     parse_iso8601_strict,
     summarize_results,
     get_exif_data_many,
     exif_create_to_iso,
-    calc_offset,
+    calc_offset
 )
 
 # ---- Resolve UI bootstrap ----
@@ -298,12 +299,12 @@ def onApplyShotFromFilename(_ev=None):
         old_shot = md.get("Shot")
         old_scene = md.get("Scene")
 
-        m_shot = SHOT_COMPACT_RE.match(clip_name) if clip_name else None
-        if not m_shot:
+        m_clipname = FILENAME_AS_TIMESTAMP_RE.match(clip_name) if clip_name else None
+        if not m_clipname:
             return {"status": "skipped", "clip": clip_name, "reason": "filename does not match compact shot pattern"}
 
-        date_str = m_shot.group("date")   # YYYYMMDD
-        time_str = m_shot.group("time")   # HHMMSS
+        date_str = m_clipname.group("date")   # YYYYMMDD
+        time_str = m_clipname.group("time")   # HHMMSS
         try:
             dt = datetime.strptime(date_str + time_str, "%Y%m%d%H%M%S")
         except Exception as e:
@@ -363,7 +364,7 @@ def onApplyNormalize(_ev=None):
         shot = md.get("Shot")
         scene = md.get("Scene")
 
-        m_shot = SHOT_COMPACT_RE.match(shot or "") if shot is not None else None
+        m_shot = SHOT_COMPACT_WITH_CAMERA_RE.match(shot or "") if shot is not None else None
         m_scene = SCENE_DATE_RE.match(scene or "") if scene is not None else None
 
         if not (m_shot and m_scene):

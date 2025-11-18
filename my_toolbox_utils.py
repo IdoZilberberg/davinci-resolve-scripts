@@ -22,9 +22,13 @@ SHOT_DATETIME_FORMATS = [
 ]
 
 # Shot like 20250424_01261900_FZ1000 (YYYYMMDD_HHMMSSxx_SUFFIX)
-SHOT_COMPACT_RE = re.compile(r"^(?P<date>\d{8})_(?P<time>\d{6})(?:\d{0,2})_.+$")
+SHOT_COMPACT_WITH_CAMERA_RE = re.compile(r"^(?P<date>\d{8})_(?P<time>\d{6})(?:\d{0,2})_.+$")
 # Scene like #20250424.  or  20250424
 SCENE_DATE_RE = re.compile(r"^#?(?P<date>\d{8})\.?$")
+FILENAME_AS_TIMESTAMP_RE = re.compile(
+    r"^(?P<date>\d{8})_(?P<time>\d{6})(?:\d{0,2})?\.(?P<ext>[a-zA-Z0-9]+)$",
+    re.IGNORECASE
+)
 
 
 # ---------- Formatting / parsing (pure) ----------
